@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from "react";
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:3001";
+const apiUrl = (path) => `${API_BASE_URL}${path}`;
+
+
 // Full multi-page analyzer: main menu + individual tool pages
 // Pages: MenuPage, SlitherPage, MythrilPage, ForgePage
 
@@ -426,7 +430,7 @@ async function callLLMInferenceEndpoint(findings, filename, codeSnippet) {
   // Note: adapt endpoint and auth as you like. This expects JSON { findings, filename, codeSnippet }
   // The endpoint should return: { findings: [{ idx, businessImpact }] } OR enriched findings.
   try {
-    const resp = await fetch("http://localhost:3001/api/llm/infer", {
+    const resp = await fetch(apiUrl("/api/llm/infer"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename, findings, codeSnippet }),
@@ -664,7 +668,7 @@ function SlitherPage(goHome) {
                   return;
                 }
 
-                const resp = await fetch("http://localhost:3001/api/llm/report-executivo", {
+                const resp = await fetch(apiUrl("/api/llm/report-executivo"), {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ filename, findings: vulns }),
@@ -908,7 +912,7 @@ function ForgePage({ code, setCode, goHome }) {
     setIsRunning(true);
 
     try {
-      const resp = await fetch("http://localhost:3001/api/smart-forge", {
+      const resp = await fetch(apiUrl("/api/smart-forge"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
@@ -924,9 +928,17 @@ function ForgePage({ code, setCode, goHome }) {
         generatedTest: data.generatedTest || "Sem código de teste retornado.",
       });
     } catch (err) {
-      setErrorMessage(
-        `Não foi possível concluir a análise com IA. ${err.message || "Tente novamente em instantes."}`
-      );
+      const message = (err?.message || "").toLowerCase();
+      const isNetworkError =
+        message.includes("failed to fetch") ||
+        message.includes("networkerror") ||
+        message.includes("network error");
+
+      const networkHint = isNetworkError
+        ? "Erro de rede: verifique se o backend está rodando e se REACT_APP_API_BASE_URL está configurada corretamente."
+        : err.message || "Tente novamente em instantes.";
+
+      setErrorMessage(`Não foi possível concluir a análise com IA. ${networkHint}`);
       setForgeResult({ explanation: "", generatedTest: "" });
     } finally {
       setIsRunning(false);
