@@ -87,6 +87,28 @@ async function callOllama(messages) {
   }
 }
 
+
+
+function extractJsonObject(raw) {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/```json/gi, "```")
+    .replace(/```/g, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
 /* ==========================================================
    1️⃣ /api/llm/infer → Impacto técnico resumido
    ========================================================== */
@@ -195,6 +217,72 @@ ${findings.map((f, i) => `${i + 1}) ${f.title} (${f.severity}) - ${f.description
     res.status(500).send("Erro ao gerar relatório executivo.");
   }
 });
+
+
+
+/* ==========================================================
+   3️⃣ /api/smart-forge → Explicação + geração de teste Foundry
+   ========================================================== */
+app.post("/api/smart-forge", async (req, res) => {
+  const { code = "" } = req.body || {};
+
+  if (!code || typeof code !== "string" || code.trim().length < 20) {
+    return res.status(400).json({
+      error: "Código Solidity inválido. Cole um contrato com conteúdo suficiente.",
+    });
+  }
+
+  const prompt = `
+Você é um auditor de smart contracts especialista em Solidity e Foundry.
+Analise o contrato enviado e responda SOMENTE em JSON válido com este formato:
+{
+  "explanation": "texto didático em português explicando a lógica principal e funções públicas",
+  "generatedTest": "código completo de um arquivo Foundry .t.sol com testes unitários e fuzzing"
+}
+
+Regras obrigatórias:
+- generatedTest deve ser um teste funcional Foundry, com pragma compatível e import de forge-std/Test.sol.
+- O contrato de teste deve cobrir as principais funções public/external encontradas no contrato.
+- Inclua ao menos 2 testes de fuzzing com parâmetros realistas e suposições (vm.assume) quando necessário.
+- NÃO inclua markdown, comentários fora do JSON, nem cercas de código.
+
+Contrato Solidity:
+${code}
+`;
+
+  try {
+    const llmResponse = await callLLM(
+      [
+        {
+          role: "system",
+          content:
+            "Responda estritamente em JSON válido. Você gera explicações e testes Foundry de alta qualidade.",
+        },
+        { role: "user", content: prompt },
+      ],
+      2200,
+      0.2
+    );
+
+    const parsed = extractJsonObject(llmResponse);
+    if (!parsed?.explanation || !parsed?.generatedTest) {
+      throw new Error("Resposta inválida da LLM para smart-forge");
+    }
+
+    return res.json({
+      explanation: String(parsed.explanation).trim(),
+      generatedTest: String(parsed.generatedTest).trim(),
+    });
+  } catch (err) {
+    log(`🔥 Erro no /api/smart-forge: ${err.message}`, "red");
+    return res.status(502).json({
+      error:
+        "Não foi possível gerar a análise inteligente agora. Tente novamente em instantes.",
+      details: err.message,
+    });
+  }
+});
+
 
 app.listen(PORT, () => {
   console.log(chalk.green(`🚀 LLM hybrid server listening on port ${PORT}`));
