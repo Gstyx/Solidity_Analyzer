@@ -144,6 +144,23 @@ npm start
 
 Acesse http://localhost:3000 no navegador.
 
+### 🛠️ Solução de Problemas (Frontend)
+
+Se o comando `npm start` retornar `react-scripts: not found`, as dependências ainda não foram instaladas (ou o diretório `node_modules` foi removido). Execute:
+
+```bash
+npm install
+npm start
+```
+
+Se o erro persistir, limpe a instalação e reinstale:
+
+```bash
+rm -rf node_modules package-lock.json
+npm install
+npm start
+```
+
 ---
 
 ### 📊 Geração de Relatórios
