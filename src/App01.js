@@ -1,7 +1,33 @@
 import React, { useState, useEffect } from "react";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:3001";
-const apiUrl = (path) => `${API_BASE_URL}${path}`;
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "";
+
+function buildApiCandidates() {
+  const candidates = [API_BASE_URL, "", "http://localhost:3001"]
+    .map((base) => (base || "").trim())
+    .filter((base, idx, arr) => arr.indexOf(base) === idx);
+  return candidates;
+}
+
+async function apiFetch(path, options = {}) {
+  const candidates = buildApiCandidates();
+  let lastError = null;
+
+  for (const base of candidates) {
+    const target = `${base}${path}`;
+    try {
+      const resp = await fetch(target, options);
+      if (resp.status === 404 && base !== "http://localhost:3001") {
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error("Falha de rede ao conectar com a API");
+}
 
 
 // Full multi-page analyzer: main menu + individual tool pages
@@ -430,7 +456,7 @@ async function callLLMInferenceEndpoint(findings, filename, codeSnippet) {
   // Note: adapt endpoint and auth as you like. This expects JSON { findings, filename, codeSnippet }
   // The endpoint should return: { findings: [{ idx, businessImpact }] } OR enriched findings.
   try {
-    const resp = await fetch(apiUrl("/api/llm/infer"), {
+    const resp = await apiFetch("/api/llm/infer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename, findings, codeSnippet }),
@@ -668,17 +694,25 @@ function SlitherPage(goHome) {
                   return;
                 }
 
-                const resp = await fetch(apiUrl("/api/llm/report-executivo"), {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ filename, findings: vulns }),
-                });
+                try {
+                  const resp = await apiFetch("/api/llm/report-executivo", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ filename, findings: vulns }),
+                  });
 
-                const blob = await resp.blob();
-                const a = document.createElement("a");
-                a.href = URL.createObjectURL(blob);
-                a.download = `${filename.replace(/\.[^/.]+$/, "")}-relatorio-executivo.txt`;
-                a.click();
+                  if (!resp.ok) {
+                    throw new Error("Falha ao gerar relatório executivo via backend.");
+                  }
+
+                  const blob = await resp.blob();
+                  const a = document.createElement("a");
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `${filename.replace(/\.[^/.]+$/, "")}-relatorio-executivo.txt`;
+                  a.click();
+                } catch (err) {
+                  alert(`Não foi possível gerar o relatório executivo. ${err.message || "Verifique a conectividade com o backend."}`);
+                }
               }}
               className="px-3 py-2 rounded border border-gray-700 text-sm bg-gradient-to-r from-blue-600 to-blue-500 text-white"
             >
@@ -912,7 +946,7 @@ function ForgePage({ code, setCode, goHome }) {
     setIsRunning(true);
 
     try {
-      const resp = await fetch(apiUrl("/api/smart-forge"), {
+      const resp = await apiFetch("/api/smart-forge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
@@ -935,7 +969,7 @@ function ForgePage({ code, setCode, goHome }) {
         message.includes("network error");
 
       const networkHint = isNetworkError
-        ? "Erro de rede: verifique se o backend está rodando e se REACT_APP_API_BASE_URL está configurada corretamente."
+        ? "Erro de rede: verifique se o backend está rodando (ex: cd backend && npm start). Se necessário, configure REACT_APP_API_BASE_URL."
         : err.message || "Tente novamente em instantes.";
 
       setErrorMessage(`Não foi possível concluir a análise com IA. ${networkHint}`);
