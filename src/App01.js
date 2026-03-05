@@ -1,5 +1,35 @@
 import React, { useState, useEffect } from "react";
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "";
+
+function buildApiCandidates() {
+  const candidates = [API_BASE_URL, "", "http://localhost:3001"]
+    .map((base) => (base || "").trim())
+    .filter((base, idx, arr) => arr.indexOf(base) === idx);
+  return candidates;
+}
+
+async function apiFetch(path, options = {}) {
+  const candidates = buildApiCandidates();
+  let lastError = null;
+
+  for (const base of candidates) {
+    const target = `${base}${path}`;
+    try {
+      const resp = await fetch(target, options);
+      if (resp.status === 404 && base !== "http://localhost:3001") {
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error("Falha de rede ao conectar com a API");
+}
+
+
 // Full multi-page analyzer: main menu + individual tool pages
 // Pages: MenuPage, SlitherPage, MythrilPage, ForgePage
 
@@ -426,7 +456,7 @@ async function callLLMInferenceEndpoint(findings, filename, codeSnippet) {
   // Note: adapt endpoint and auth as you like. This expects JSON { findings, filename, codeSnippet }
   // The endpoint should return: { findings: [{ idx, businessImpact }] } OR enriched findings.
   try {
-    const resp = await fetch("http://localhost:3001/api/llm/infer", {
+    const resp = await apiFetch("/api/llm/infer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename, findings, codeSnippet }),
@@ -664,17 +694,25 @@ function SlitherPage(goHome) {
                   return;
                 }
 
-                const resp = await fetch("http://localhost:3001/api/llm/report-executivo", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ filename, findings: vulns }),
-                });
+                try {
+                  const resp = await apiFetch("/api/llm/report-executivo", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ filename, findings: vulns }),
+                  });
 
-                const blob = await resp.blob();
-                const a = document.createElement("a");
-                a.href = URL.createObjectURL(blob);
-                a.download = `${filename.replace(/\.[^/.]+$/, "")}-relatorio-executivo.txt`;
-                a.click();
+                  if (!resp.ok) {
+                    throw new Error("Falha ao gerar relatório executivo via backend.");
+                  }
+
+                  const blob = await resp.blob();
+                  const a = document.createElement("a");
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `${filename.replace(/\.[^/.]+$/, "")}-relatorio-executivo.txt`;
+                  a.click();
+                } catch (err) {
+                  alert(`Não foi possível gerar o relatório executivo. ${err.message || "Verifique a conectividade com o backend."}`);
+                }
               }}
               className="px-3 py-2 rounded border border-gray-700 text-sm bg-gradient-to-r from-blue-600 to-blue-500 text-white"
             >
@@ -893,26 +931,105 @@ function MythrilPage({ code, setCode, goHome }) {
 
 // ------------------ Forge Page ------------------
 function ForgePage({ code, setCode, goHome }) {
-  const [results, setResults] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [activeTab, setActiveTab] = useState("explanation");
+  const [forgeResult, setForgeResult] = useState({ explanation: "", generatedTest: "" });
+  const [errorMessage, setErrorMessage] = useState("");
 
-  const runForge = () => {
+  const runForge = async () => {
+    if (!code?.trim()) {
+      setErrorMessage("Cole um contrato Solidity antes de iniciar a análise inteligente.");
+      return;
+    }
+
+    setErrorMessage("");
     setIsRunning(true);
-    setTimeout(() => {
-      setResults([
-        { title: 'Fuzz Test Failure', severity: 'High', description: 'Found failing input in function transfer().' },
-        { title: 'Low Coverage', severity: 'Info', description: 'Function withdraw() not covered by any test.' }
-      ]);
+
+    try {
+      const resp = await apiFetch("/api/smart-forge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.error || "Falha ao gerar análise e testes com IA.");
+      }
+
+      setForgeResult({
+        explanation: data.explanation || "Sem explicação retornada.",
+        generatedTest: data.generatedTest || "Sem código de teste retornado.",
+      });
+    } catch (err) {
+      const message = (err?.message || "").toLowerCase();
+      const isNetworkError =
+        message.includes("failed to fetch") ||
+        message.includes("networkerror") ||
+        message.includes("network error");
+
+      const networkHint = isNetworkError
+        ? "Erro de rede: verifique se o backend está rodando (ex: cd backend && npm start). Se necessário, configure REACT_APP_API_BASE_URL."
+        : err.message || "Tente novamente em instantes.";
+
+      setErrorMessage(`Não foi possível concluir a análise com IA. ${networkHint}`);
+      setForgeResult({ explanation: "", generatedTest: "" });
+    } finally {
       setIsRunning(false);
-    }, 1200);
+    }
   };
 
   return (
     <ToolLayout name="Forge (Foundry)" goHome={goHome}>
-      <div className="text-sm text-gray-400 mb-3">Executa testes unitários, fuzzing e gera relatórios de cobertura.</div>
+      <div className="text-sm text-gray-400 mb-3">
+        Envie seu contrato para a IA gerar explicação didática + testes Foundry com fuzzing.
+      </div>
+
       <Editor code={code} setCode={setCode} />
-      <RunButton label="Executar Forge Tests" isRunning={isRunning} onClick={runForge} />
-      <ResultsList results={results} />
+      <RunButton label="Gerar análise e testes com IA" isRunning={isRunning} onClick={runForge} />
+
+      {isRunning && (
+        <div className="mb-4 p-3 rounded-lg border border-emerald-700 bg-emerald-900/20 text-emerald-300 text-sm animate-pulse">
+          A IA está analisando seu contrato e gerando testes...
+        </div>
+      )}
+
+      {errorMessage && (
+        <div className="mb-4 p-3 rounded-lg border border-red-700 bg-red-900/20 text-red-300 text-sm">
+          {errorMessage}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-gray-800 bg-[#071014] overflow-hidden">
+        <div className="flex border-b border-gray-800">
+          <button
+            onClick={() => setActiveTab("explanation")}
+            className={`px-4 py-2 text-sm ${activeTab === "explanation" ? "text-emerald-300 border-b-2 border-emerald-400" : "text-gray-400"}`}
+          >
+            Explicação do Contrato
+          </button>
+          <button
+            onClick={() => setActiveTab("test")}
+            className={`px-4 py-2 text-sm ${activeTab === "test" ? "text-emerald-300 border-b-2 border-emerald-400" : "text-gray-400"}`}
+          >
+            Código de Teste Gerado (.t.sol)
+          </button>
+        </div>
+
+        <div className="p-4">
+          {activeTab === "explanation" ? (
+            <div className="text-sm leading-7 text-gray-200 whitespace-pre-wrap min-h-[180px]">
+              {forgeResult.explanation || "Execute a análise para visualizar a explicação inteligente do contrato."}
+            </div>
+          ) : (
+            <pre className="text-xs sm:text-sm whitespace-pre-wrap overflow-auto rounded-lg border border-gray-800 bg-[#0b0b0c] p-4 text-gray-200 min-h-[220px]">
+              <code>
+                {forgeResult.generatedTest || "O código de teste Foundry gerado pela IA aparecerá aqui."}
+              </code>
+            </pre>
+          )}
+        </div>
+      </div>
     </ToolLayout>
   );
 }
